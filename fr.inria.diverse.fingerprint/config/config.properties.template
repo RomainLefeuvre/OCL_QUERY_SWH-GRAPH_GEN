@@ -1,4 +1,5 @@
-threadNumber=1
-exportPath=export/
+threadNumber=10
+exportPath="export/"
 loadingMode=MAPPED
+graphPath=../2021-03-23-popular-3k-python
 checkPointIntervalInMinutes=30

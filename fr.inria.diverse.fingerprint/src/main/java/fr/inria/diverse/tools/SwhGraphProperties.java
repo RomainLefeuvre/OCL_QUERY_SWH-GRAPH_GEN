@@ -14,6 +14,8 @@ import it.unimi.dsi.fastutil.bytes.ByteMappedBigList;
 import it.unimi.dsi.fastutil.ints.IntBigList;
 import it.unimi.dsi.fastutil.ints.IntMappedBigList;
 import it.unimi.dsi.fastutil.io.BinIO;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
 import it.unimi.dsi.fastutil.longs.LongBigList;
 import it.unimi.dsi.fastutil.longs.LongMappedBigList;
 import it.unimi.dsi.fastutil.shorts.ShortBigList;
@@ -21,14 +23,20 @@ import it.unimi.dsi.fastutil.shorts.ShortMappedBigList;
 import it.unimi.dsi.lang.FlyweightPrototype;
 import it.unimi.dsi.sux4j.util.EliasFanoLongBigList;
 import org.apache.commons.configuration2.ex.ConfigurationException;
+import org.softwareheritage.graph.AllowedEdges;
 import org.softwareheritage.graph.SWHID;
 import org.softwareheritage.graph.SwhType;
 import org.softwareheritage.graph.maps.NodeIdMap;
 import org.softwareheritage.graph.maps.NodeTypesMap;
 
+ import java.io.File;
+ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+ import java.nio.file.NoSuchFileException;
 import java.util.Base64;
+
+
 
 /**
  * This objects contains SWH graph properties such as node labels.
@@ -47,28 +55,33 @@ import java.util.Base64;
  * @see NodeTypesMap
  */
 public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties> {
-    protected final String path;
-
-    protected  NodeIdMap nodeIdMap;
-    protected  NodeTypesMap nodeTypesMap;
-    protected LongBigList authorTimestamp;
-    protected ShortBigList authorTimestampOffset;
-    protected LongBigList committerTimestamp;
-    protected ShortBigList committerTimestampOffset;
-    protected LongBigList contentLength;
-    protected LongArrayBitVector contentIsSkipped;
-    protected IntBigList authorId;
-    protected IntBigList committerId;
-    protected ByteBigList messageBuffer;
-    protected LongBigList messageOffsets;
-    protected ByteBigList tagNameBuffer;
-    protected LongBigList tagNameOffsets;
-    protected MappedFrontCodedStringBigList edgeLabelNames;
     
+     final static Logger logger = LoggerFactory.getLogger(NodeTypesMap.class);
+ 
+     private final String path;
+
+     protected  NodeIdMap nodeIdMap;
+     protected  NodeTypesMap nodeTypesMap;
+     protected LongBigList authorTimestamp;
+     protected ShortBigList authorTimestampOffset;
+     protected LongBigList committerTimestamp;
+     protected ShortBigList committerTimestampOffset;
+     protected LongBigList contentLength;
+     protected LongArrayBitVector contentIsSkipped;
+     protected IntBigList authorId;
+     protected IntBigList committerId;
+     protected ByteBigList messageBuffer;
+     protected LongBigList messageOffsets;
+     protected ByteBigList tagNameBuffer;
+     protected LongBigList tagNameOffsets;
+     protected MappedFrontCodedStringBigList edgeLabelNames;
+
+
     protected SwhGraphProperties(String path) {
     	this.path=path;
+        this.nodeIdMap=null;
+        this.nodeTypesMap=null;
     }
-
 
     protected SwhGraphProperties(String path, NodeIdMap nodeIdMap, NodeTypesMap nodeTypesMap) {
         this.path = path;
@@ -116,7 +129,7 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
                 ((contentLength instanceof LongMappedBigList)
                         ? ((LongMappedBigList) contentLength).copy()
                         : contentLength),
-                (contentIsSkipped != null) ? contentIsSkipped.copy() : null,
+                 contentIsSkipped, // Don't need to copy because it is eagerly loaded in RAM, not mmapped
                 ((authorId instanceof IntMappedBigList) ? ((IntMappedBigList) authorId).copy() : authorId),
                 ((committerId instanceof IntMappedBigList) ? ((IntMappedBigList) committerId).copy() : committerId),
                 ((messageBuffer instanceof ByteMappedBigList)
@@ -136,7 +149,8 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
     }
 
     public static SwhGraphProperties load(String path) throws IOException {
-        return new SwhGraphProperties(path, new NodeIdMap(path), new NodeTypesMap(path));
+         NodeIdMap nodeIdMap = new NodeIdMap(path);
+         return new SwhGraphProperties(path, nodeIdMap, new NodeTypesMap(path, nodeIdMap.size64()));
     }
 
     /**
@@ -150,6 +164,28 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
     public String getPath() {
         return path;
     }
+ 
+     /**
+      * Converts SWHID node to long.
+      *
+      * @param swhid node specified as a <code>byte[]</code>
+      * @return internal long node id
+      * @see SWHID
+      */
+     public long getNodeId(byte[] swhid) {
+         return nodeIdMap.getNodeId(swhid);
+     }
+ 
+     /**
+      * Converts SWHID node to long.
+      *
+      * @param swhid node specified as a <code>String</code>
+      * @return internal long node id
+      * @see SWHID
+      */
+     public long getNodeId(String swhid) {
+         return nodeIdMap.getNodeId(swhid);
+     }
 
     /**
      * Converts {@link SWHID} node to long.
@@ -270,10 +306,17 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
      * ingestion
      */
     public void loadContentIsSkipped() throws IOException {
+         try {
+             File f = new File(path + ".property.content.is_skipped.bits");
+             long[] array = BinIO.loadLongs(f, java.nio.ByteOrder.BIG_ENDIAN);
+             contentIsSkipped = LongArrayBitVector.wrap(array);
+         } catch (FileNotFoundException | NoSuchFileException e2) {
+             logger.info("Could not load is_skipped.bits, falling back to is_skipped.bin");
         try {
             contentIsSkipped = (LongArrayBitVector) BinIO.loadObject(path + ".property.content.is_skipped.bin");
         } catch (ClassNotFoundException e) {
             throw new IOException(e);
+             }
         }
     }
 
@@ -341,6 +384,15 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
 
     /** Get the message of the given revision or release node */
     public byte[] getMessage(long nodeId) {
+         byte[] messageBase64 = getMessageBase64(nodeId);
+         if (messageBase64 == null) {
+             return null;
+         }
+         return Base64.getDecoder().decode(messageBase64);
+     }
+ 
+     /** Get the message of the given revision or release node, encoded as a base64 byte array */
+     public byte[] getMessageBase64(long nodeId) {
         if (messageBuffer == null || messageOffsets == null) {
             throw new IllegalStateException("Messages not loaded");
         }
@@ -348,7 +400,7 @@ public class SwhGraphProperties implements FlyweightPrototype<SwhGraphProperties
         if (startOffset == -1) {
             return null;
         }
-        return Base64.getDecoder().decode(getLine(messageBuffer, startOffset));
+         return getLine(messageBuffer, startOffset);
     }
 
     /** Get the URL of the given origin node */

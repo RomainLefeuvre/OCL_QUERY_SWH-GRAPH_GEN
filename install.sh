@@ -6,6 +6,6 @@ echo "Installing dsi-utils"
    
 echo "Installing swh-graph"
 ./fr.inria.diverse.fingerprint/mvnw install:install-file \
-   -Dfile=./thirdPartyLibrary/swh-graph/swh-graph-2.2.0-threadSafe.jar \
+   -Dfile=./thirdPartyLibrary/swh-graph/swh-graph-5.1.0.jar \
    -DpomFile=./thirdPartyLibrary/swh-graph/pom.xml
    
